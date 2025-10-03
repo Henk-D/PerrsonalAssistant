@@ -1,0 +1,36 @@
+# Python 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 测试文件
+test_*.py
+*_test.py
+
+# IDE 和编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log
+
+# 数据文件（可选，根据需要调整）
+# goal_planner_data.json
+
+# 临时文件
+*.tmp
+*.bak
