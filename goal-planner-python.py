@@ -73,12 +73,16 @@ def init_session_state():
         st.session_state.goals = []
     if 'tasks' not in st.session_state:
         st.session_state.tasks = []
+    if 'weekly_tasks' not in st.session_state:
+        st.session_state.weekly_tasks = []  # 新增周任务列表
     if 'activities' not in st.session_state:
         st.session_state.activities = []
     if 'insights' not in st.session_state:
         st.session_state.insights = []
     if 'schedule' not in st.session_state:
         st.session_state.schedule = []
+    if 'weekly_schedule' not in st.session_state:
+        st.session_state.weekly_schedule = {}  # 新增七日日程字典
     if 'api_enabled' not in st.session_state:
         st.session_state.api_enabled = False
     if 'ai_provider' not in st.session_state:
@@ -97,9 +101,11 @@ def save_data():
     data = {
         'goals': st.session_state.goals,
         'tasks': st.session_state.tasks,
+        'weekly_tasks': st.session_state.get('weekly_tasks', []),
         'activities': st.session_state.activities,
         'insights': st.session_state.insights,
         'schedule': st.session_state.schedule,
+        'weekly_schedule': st.session_state.get('weekly_schedule', {}),
         'saved_at': datetime.now().isoformat()
     }
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
@@ -113,9 +119,11 @@ def load_data():
                 data = json.load(f)
                 st.session_state.goals = data.get('goals', [])
                 st.session_state.tasks = data.get('tasks', [])
+                st.session_state.weekly_tasks = data.get('weekly_tasks', [])
                 st.session_state.activities = data.get('activities', [])
                 st.session_state.insights = data.get('insights', [])
                 st.session_state.schedule = data.get('schedule', [])
+                st.session_state.weekly_schedule = data.get('weekly_schedule', {})
         except Exception as e:
             st.error(f"加载数据失败: {str(e)}")
 
@@ -351,9 +359,11 @@ def ai_goal_breakdown(goal: Dict):
 1. 如果是长期目标，分解为3-5个年度目标
 2. 如果是年度目标，分解为4-6个季度目标
 3. 如果是季度目标，分解为3-4个月度目标
-4. 每个子目标应该是SMART原则的（具体、可衡量、可实现、相关、有时限）
-5. 子目标之间应有逻辑关系，形成实现主目标的路径
-6. 为每个子目标设定合理的截止日期
+4. 如果是月度目标，分解为4-5个周任务
+5. 如果是周任务，分解为每天的具体行动（包括建议的执行日期和时间）
+6. 每个子目标应该是SMART原则的（具体、可衡量、可实现、相关、有时限）
+7. 子目标之间应有逻辑关系，形成实现主目标的路径
+8. 为每个子目标设定合理的截止日期和预计完成时间
 
 请以JSON格式返回，格式如下：
 {{
@@ -365,6 +375,8 @@ def ai_goal_breakdown(goal: Dict):
       "category": "分类",
       "description": "详细描述",
       "deadline": "YYYY-MM-DD",
+      "estimatedTime": 60,
+      "priority": 2,
       "keyActions": ["关键行动1", "关键行动2"]
     }}
   ]
@@ -383,6 +395,187 @@ def ai_goal_breakdown(goal: Dict):
                 st.error(f"解析 AI 响应失败: {str(e)}")
                 return None
     return None
+
+# 获取近七日的周任务
+def get_weekly_tasks_for_next_7_days():
+    """获取未来7天内需要完成的周任务"""
+    today = datetime.now().date()
+    seven_days_later = today + timedelta(days=7)
+    
+    upcoming_tasks = []
+    for task in st.session_state.weekly_tasks:
+        if task.get('completed'):
+            continue
+        
+        # 检查任务是否在未来7天内
+        task_date = task.get('scheduledDate')
+        if task_date:
+            try:
+                task_datetime = datetime.fromisoformat(task_date).date()
+                if today <= task_datetime <= seven_days_later:
+                    upcoming_tasks.append(task)
+            except:
+                pass
+    
+    return sorted(upcoming_tasks, key=lambda x: x.get('scheduledDate', ''))
+
+# 生成七日智能日程
+def generate_weekly_schedule():
+    """生成未来7天的智能日程安排"""
+    weekly_schedule = {}
+    
+    # 获取未来7天的日期
+    base_date = datetime.now().date()
+    
+    for day_offset in range(7):
+        current_date = base_date + timedelta(days=day_offset)
+        date_str = current_date.isoformat()
+        
+        # 获取这一天的周任务
+        day_weekly_tasks = [
+            t for t in st.session_state.weekly_tasks 
+            if t.get('scheduledDate') == date_str and not t.get('completed')
+        ]
+        
+        # 获取这一天的普通任务
+        day_tasks = [
+            t for t in st.session_state.tasks 
+            if t.get('scheduledDate') == date_str and not t.get('completed')
+        ]
+        
+        # 合并所有任务并排序
+        all_tasks = day_weekly_tasks + day_tasks
+        all_tasks = sorted(all_tasks, key=lambda x: x.get('priority', 1), reverse=True)
+        
+        # 生成这一天的时间表
+        schedule = []
+        activities = sorted(st.session_state.activities, key=lambda x: x['startTime'])
+        
+        current_time = 480  # 8:00 AM in minutes
+        
+        for activity in activities:
+            hours, minutes = map(int, activity['startTime'].split(':'))
+            activity_start = hours * 60 + minutes
+            
+            # 在活动之前安排任务
+            if activity_start > current_time and all_tasks:
+                available_time = activity_start - current_time
+                while available_time >= 30 and all_tasks:
+                    task = all_tasks.pop(0)
+                    task_duration = task.get('estimatedTime', 60)
+                    actual_duration = min(available_time, task_duration)
+                    
+                    schedule.append({
+                        'type': 'task',
+                        'item': task,
+                        'startTime': current_time,
+                        'duration': actual_duration
+                    })
+                    
+                    current_time += actual_duration
+                    available_time -= actual_duration
+            
+            # 添加活动
+            schedule.append({
+                'type': 'activity',
+                'item': activity,
+                'startTime': activity_start,
+                'duration': activity['duration']
+            })
+            
+            current_time = activity_start + activity['duration']
+        
+        # 安排剩余任务
+        while all_tasks and current_time < 1320:  # 22:00
+            task = all_tasks.pop(0)
+            task_duration = task.get('estimatedTime', 60)
+            
+            schedule.append({
+                'type': 'task',
+                'item': task,
+                'startTime': current_time,
+                'duration': task_duration
+            })
+            
+            current_time += task_duration
+        
+        weekly_schedule[date_str] = schedule
+    
+    st.session_state.weekly_schedule = weekly_schedule
+    return weekly_schedule
+
+# 导出日程到iCalendar格式
+def export_to_icalendar(schedule_dict: Dict) -> str:
+    """将日程导出为iCalendar格式的字符串"""
+    
+    # iCalendar头部
+    ical_content = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//智能目标管理系统//Goal Planner v1.0//CN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        "X-WR-CALNAME:智能目标管理日程",
+        "X-WR-TIMEZONE:Asia/Shanghai",
+    ]
+    
+    # 为每个日期的每个事项创建事件
+    for date_str, schedule in schedule_dict.items():
+        for item in schedule:
+            event_date = datetime.fromisoformat(date_str)
+            start_time = format_time(item['startTime'])
+            end_time = format_time(item['startTime'] + item['duration'])
+            
+            # 创建datetime对象
+            start_datetime = datetime.combine(
+                event_date.date(),
+                datetime.strptime(start_time, '%H:%M').time()
+            )
+            end_datetime = datetime.combine(
+                event_date.date(),
+                datetime.strptime(end_time, '%H:%M').time()
+            )
+            
+            # 转换为UTC时间字符串格式
+            dtstart = start_datetime.strftime('%Y%m%dT%H%M%S')
+            dtend = end_datetime.strftime('%Y%m%dT%H%M%S')
+            
+            # 创建唯一ID
+            uid = f"{dtstart}-{item['type']}-{hash(item['item']['name'])}@goalplanner"
+            
+            # 事件名称和描述
+            if item['type'] == 'task':
+                task_item = item['item']
+                summary = f"🎯 {task_item['name']}"
+                description = f"类型: 任务\\n"
+                description += f"优先级: {task_item.get('priority', 2)}\\n"
+                if task_item.get('preparation'):
+                    description += f"准备: {task_item['preparation']}\\n"
+                if task_item.get('guidance'):
+                    description += f"指导: {task_item['guidance']}\\n"
+            else:
+                activity_item = item['item']
+                summary = f"⏰ {activity_item['name']}"
+                description = "类型: 日常活动"
+            
+            # 添加事件
+            ical_content.extend([
+                "BEGIN:VEVENT",
+                f"UID:{uid}",
+                f"DTSTAMP:{datetime.now().strftime('%Y%m%dT%H%M%SZ')}",
+                f"DTSTART:{dtstart}",
+                f"DTEND:{dtend}",
+                f"SUMMARY:{summary}",
+                f"DESCRIPTION:{description}",
+                "STATUS:CONFIRMED",
+                "TRANSP:OPAQUE",
+                "END:VEVENT",
+            ])
+    
+    # iCalendar结尾
+    ical_content.append("END:VCALENDAR")
+    
+    return "\n".join(ical_content)
 
 # 格式化时间
 def format_time(minutes: int) -> str:
@@ -414,10 +607,14 @@ def main():
             st.session_state.show_goal_modal = True
         if st.button("📝 添加任务"):
             st.session_state.show_task_modal = True
-        if st.button("🧠 生成日程"):
+        if st.button("🧠 生成今日日程"):
             generate_schedule()
             save_data()
-            st.success("日程已生成！")
+            st.success("今日日程已生成！")
+        if st.button("📅 生成七日日程"):
+            generate_weekly_schedule()
+            save_data()
+            st.success("七日日程已生成！")
         if st.button("✨ AI洞察"):
             if st.session_state.api_enabled:
                 generate_ai_insights()
@@ -552,7 +749,7 @@ def show_goal_card(goal: Dict):
     
     with col2:
         # 操作按钮
-        can_breakdown = goal['type'] in ['长期', '年度', '季度']
+        can_breakdown = goal['type'] in ['长期', '年度', '季度', '月度', '周']
         
         if can_breakdown and st.button("🧠", key=f"breakdown_{goal['id']}", help="AI分解"):
             st.session_state.selected_goal = goal
@@ -683,18 +880,35 @@ def show_breakdown_modal():
             if st.button(f"添加 {len(selected_indices)} 个目标", type="primary", use_container_width=True):
                 for i in selected_indices:
                     sub_goal = result['subGoals'][i]
-                    new_goal = {
-                        'id': datetime.now().timestamp() + i,
-                        'name': sub_goal['name'],
-                        'type': sub_goal['type'],
-                        'category': sub_goal.get('category', ''),
-                        'description': sub_goal.get('description', ''),
-                        'deadline': sub_goal.get('deadline', ''),
-                        'progress': 0,
-                        'createdAt': datetime.now().isoformat(),
-                        'parentGoalId': goal['id']
-                    }
-                    st.session_state.goals.append(new_goal)
+                    
+                    # 如果是周类型，添加到weekly_tasks，否则添加到goals
+                    if sub_goal['type'] == '周':
+                        new_task = {
+                            'id': datetime.now().timestamp() + i,
+                            'name': sub_goal['name'],
+                            'goalId': goal['id'],
+                            'category': sub_goal.get('category', ''),
+                            'description': sub_goal.get('description', ''),
+                            'priority': sub_goal.get('priority', 2),
+                            'estimatedTime': sub_goal.get('estimatedTime', 60),
+                            'scheduledDate': sub_goal.get('deadline', ''),
+                            'completed': False,
+                            'createdAt': datetime.now().isoformat()
+                        }
+                        st.session_state.weekly_tasks.append(new_task)
+                    else:
+                        new_goal = {
+                            'id': datetime.now().timestamp() + i,
+                            'name': sub_goal['name'],
+                            'type': sub_goal['type'],
+                            'category': sub_goal.get('category', ''),
+                            'description': sub_goal.get('description', ''),
+                            'deadline': sub_goal.get('deadline', ''),
+                            'progress': 0,
+                            'createdAt': datetime.now().isoformat(),
+                            'parentGoalId': goal['id']
+                        }
+                        st.session_state.goals.append(new_goal)
                 
                 save_data()
                 st.session_state.show_breakdown_modal = False
@@ -707,55 +921,139 @@ def show_schedule():
     """显示日程页面"""
     st.title("📅 智能日程")
     
-    col1, col2 = st.columns([0.8, 0.2])
-    with col2:
-        if st.button("➕ 添加活动", use_container_width=True):
-            st.session_state.show_activity_modal = True
+    # 选项卡：今日日程 vs 七日日程
+    tab1, tab2, tab3 = st.tabs(["📋 今日日程", "📅 七日日程", "⏰ 日常活动"])
     
-    st.divider()
+    with tab1:
+        # 今日日程视图
+        col1, col2 = st.columns([0.6, 0.4])
+        with col1:
+            st.subheader("今日时间安排")
+        with col2:
+            if st.button("🧠 生成今日日程", use_container_width=True):
+                generate_schedule()
+                save_data()
+                st.success("今日日程已生成！")
+                st.rerun()
+        
+        if st.session_state.schedule:
+            for item in st.session_state.schedule:
+                start_time = format_time(item['startTime'])
+                end_time = format_time(item['startTime'] + item['duration'])
+                
+                if item['type'] == 'task':
+                    with st.container():
+                        st.markdown(
+                            f"""<div style='background:#e0e7ff;padding:1rem;border-radius:0.5rem;border-left:4px solid #4f46e5;margin-bottom:0.5rem'>
+                            <strong>🎯 {item['item']['name']}</strong><br>
+                            <span style='color:#6b7280;font-size:0.875rem'>{start_time} - {end_time}</span>
+                            </div>""",
+                            unsafe_allow_html=True
+                        )
+                else:
+                    st.write(f"⏰ **{item['item']['name']}** | {start_time} - {end_time}")
+        else:
+            st.info("点击'生成今日日程'按钮创建日程安排")
     
-    # 日常活动
-    st.subheader("⏰ 日常固定活动")
-    if st.session_state.activities:
-        activities = sorted(st.session_state.activities, key=lambda x: x['startTime'])
-        for activity in activities:
-            col1, col2, col3 = st.columns([0.6, 0.3, 0.1])
-            with col1:
-                st.write(f"🕐 **{activity['name']}**")
-            with col2:
-                st.write(f"{activity['startTime']} ({activity['duration']}分钟)")
-            with col3:
-                if st.button("🗑️", key=f"del_act_{activity['id']}"):
-                    st.session_state.activities = [
-                        a for a in st.session_state.activities if a['id'] != activity['id']
-                    ]
-                    save_data()
-                    st.rerun()
-    else:
-        st.info("添加你的日常活动，如起床、吃饭、运动等")
-    
-    st.divider()
-    
-    # 生成的日程
-    if st.session_state.schedule:
-        st.subheader("📋 今日时间表")
-        for item in st.session_state.schedule:
-            start_time = format_time(item['startTime'])
-            end_time = format_time(item['startTime'] + item['duration'])
-            
-            if item['type'] == 'task':
-                with st.container():
-                    st.markdown(
-                        f"""<div style='background:#e0e7ff;padding:1rem;border-radius:0.5rem;border-left:4px solid #4f46e5;margin-bottom:0.5rem'>
-                        <strong>🎯 {item['item']['name']}</strong><br>
-                        <span style='color:#6b7280;font-size:0.875rem'>{start_time} - {end_time}</span>
-                        </div>""",
-                        unsafe_allow_html=True
+    with tab2:
+        # 七日日程视图
+        col1, col2, col3 = st.columns([0.4, 0.3, 0.3])
+        with col1:
+            st.subheader("未来七日安排")
+        with col2:
+            if st.button("🧠 生成七日日程", use_container_width=True):
+                generate_weekly_schedule()
+                save_data()
+                st.success("七日日程已生成！")
+                st.rerun()
+        with col3:
+            if st.button("� 导出到日历", use_container_width=True):
+                if st.session_state.weekly_schedule:
+                    ical_content = export_to_icalendar(st.session_state.weekly_schedule)
+                    st.download_button(
+                        label="下载 .ics 文件",
+                        data=ical_content,
+                        file_name=f"goal_planner_schedule_{datetime.now().strftime('%Y%m%d')}.ics",
+                        mime="text/calendar",
+                        use_container_width=True
                     )
-            else:
-                st.write(f"⏰ **{item['item']['name']}** | {start_time} - {end_time}")
-    else:
-        st.info("添加任务和活动后，点击'生成日程'按钮")
+                else:
+                    st.warning("请先生成七日日程")
+        
+        st.divider()
+        
+        # 显示周任务摘要
+        upcoming_weekly_tasks = get_weekly_tasks_for_next_7_days()
+        if upcoming_weekly_tasks:
+            with st.expander(f"📌 本周待办任务 ({len(upcoming_weekly_tasks)})", expanded=True):
+                for task in upcoming_weekly_tasks:
+                    priority_color = {1: "🟢", 2: "🟡", 3: "🔴"}
+                    date_str = task.get('scheduledDate', '未设定')
+                    st.write(f"{priority_color.get(task.get('priority', 2), '⚪')} **{task['name']}** - {date_str}")
+        
+        st.divider()
+        
+        # 显示七日日程
+        if st.session_state.weekly_schedule:
+            base_date = datetime.now().date()
+            weekdays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+            
+            for day_offset in range(7):
+                current_date = base_date + timedelta(days=day_offset)
+                date_str = current_date.isoformat()
+                weekday = weekdays[current_date.weekday()]
+                
+                schedule = st.session_state.weekly_schedule.get(date_str, [])
+                
+                with st.expander(f"{weekday} - {current_date.strftime('%Y年%m月%d日')} ({len(schedule)} 项)", expanded=(day_offset == 0)):
+                    if schedule:
+                        for item in schedule:
+                            start_time = format_time(item['startTime'])
+                            end_time = format_time(item['startTime'] + item['duration'])
+                            
+                            if item['type'] == 'task':
+                                task_item = item['item']
+                                priority_emoji = {1: "🟢", 2: "🟡", 3: "🔴"}
+                                st.markdown(
+                                    f"""<div style='background:#f0f9ff;padding:0.75rem;border-radius:0.375rem;border-left:3px solid #0ea5e9;margin-bottom:0.5rem'>
+                                    {priority_emoji.get(task_item.get('priority', 2), '⚪')} <strong>{task_item['name']}</strong><br>
+                                    <span style='color:#6b7280;font-size:0.875rem'>⏰ {start_time} - {end_time} ({item['duration']}分钟)</span>
+                                    </div>""",
+                                    unsafe_allow_html=True
+                                )
+                            else:
+                                st.write(f"⏰ **{item['item']['name']}** | {start_time} - {end_time}")
+                    else:
+                        st.info("该日暂无安排")
+        else:
+            st.info("点击'生成七日日程'按钮创建未来7天的日程安排")
+    
+    with tab3:
+        # 日常活动管理
+        col1, col2 = st.columns([0.8, 0.2])
+        with col1:
+            st.subheader("⏰ 日常固定活动")
+        with col2:
+            if st.button("➕ 添加活动", use_container_width=True):
+                st.session_state.show_activity_modal = True
+        
+        if st.session_state.activities:
+            activities = sorted(st.session_state.activities, key=lambda x: x['startTime'])
+            for activity in activities:
+                col1, col2, col3 = st.columns([0.6, 0.3, 0.1])
+                with col1:
+                    st.write(f"🕐 **{activity['name']}**")
+                with col2:
+                    st.write(f"{activity['startTime']} ({activity['duration']}分钟)")
+                with col3:
+                    if st.button("🗑️", key=f"del_act_{activity['id']}"):
+                        st.session_state.activities = [
+                            a for a in st.session_state.activities if a['id'] != activity['id']
+                        ]
+                        save_data()
+                        st.rerun()
+        else:
+            st.info("添加你的日常活动，如起床、吃饭、运动等")
     
     # 活动模态框
     if st.session_state.get('show_activity_modal', False):
@@ -1213,16 +1511,23 @@ def show_settings():
     # 日历集成说明
     st.subheader("📅 日历集成")
     
-    st.info("""
-    **导出日程到日历：**
+    st.success("""
+    **导出日程到日历（已实现）：**
     
-    在"日程"页面生成日程后，可以导出为 .ics 文件（功能开发中）
+    1. 在"日程"页面生成七日日程
+    2. 点击"导出到日历"按钮下载 .ics 文件
+    3. 双击 .ics 文件自动导入到 macOS 日历
     
-    支持导入到：
-    - macOS 日历
-    - Google Calendar
-    - Outlook
-    - 任何支持 iCalendar 格式的应用
+    **支持的日历应用：**
+    - ✅ macOS 日历（推荐）
+    - ✅ Google Calendar
+    - ✅ Outlook
+    - ✅ 任何支持 iCalendar 格式的应用
+    
+    **使用提示：**
+    - 导出的日程包含所有任务和活动
+    - 包含任务优先级、准备事项等详细信息
+    - 可以在日历应用中直接编辑和管理
     """)
     
     st.divider()
@@ -1260,6 +1565,8 @@ def show_task_modal():
         
         estimated_time = st.number_input("预计用时（分钟）", min_value=15, step=15, value=60)
         
+        scheduled_date = st.date_input("计划日期", value=datetime.now().date())
+        
         preparation = st.text_area(
             "📋 准备事项",
             placeholder="需要的信息、文件、工具等"
@@ -1290,6 +1597,7 @@ def show_task_modal():
                 'category': category,
                 'priority': priority_map[priority],
                 'estimatedTime': estimated_time,
+                'scheduledDate': scheduled_date.isoformat() if scheduled_date else '',
                 'preparation': preparation,
                 'guidance': guidance,
                 'completed': False,
